@@ -77,7 +77,7 @@ def call_ai_engine(client, prompt, model_name, is_batch=False, max_retries=4):
         except Exception as e:
             error_str = str(e)
             if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                wait_time = (attempt + 1) * 5  # 遞增等待：5秒、10秒、15秒...
+                wait_time = (attempt + 1) * 15  # 遞增等待：5秒、10秒、15秒...
                 st.warning(f"⚠️ Gemini 伺服器忙碌中，進行第 {attempt + 1}/{max_retries} 次重試，等待 {wait_time} 秒...")
                 time.sleep(wait_time)
             else:
@@ -215,7 +215,7 @@ if st.button("🚀 開始處理任務", type="primary"):
 
             progress_bar.progress((index + 1) / total_rows)
             # 加入 1.5 秒間隔，保護 API 頻率不被鎖住
-            time.sleep(1.5)
+            time.sleep(3)
 
         if processed_results:
             df_out = pd.DataFrame(processed_results)
