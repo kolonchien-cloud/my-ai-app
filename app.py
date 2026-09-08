@@ -1,12 +1,12 @@
 import os
 import re
+import io
 import json
 import time
 import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types
-from openpyxl.worksheet.datavalidation import DataValidation
 from tavily import TavilyClient
 
 # 頁面標題與佈局
@@ -52,11 +52,11 @@ def search_web_tavily(tavily_client, query, max_results):
                 )
         return "\n".join(context_parts)
     except Exception as e:
-        st.warning(f"Tavily 搜尋錯誤: {e}")
+        st.warning(f"⚠️ Tavily 搜尋警告: {e}")
         return ""
 
 def call_ai_engine(client, prompt, model_name, is_batch=False, max_retries=4):
-    """具備自動重試（Backoff）機制的 Gemini 呼叫函數"""
+    """具備自動重試（Exponential Backoff）機制的 Gemini 呼叫函數"""
     for attempt in range(max_retries):
         try:
             config = types.GenerateContentConfig(response_mime_type="application/json")
@@ -76,13 +76,12 @@ def call_ai_engine(client, prompt, model_name, is_batch=False, max_retries=4):
 
         except Exception as e:
             error_str = str(e)
-            # 偵測是否為 503 塞車 或 429 頻率限制
             if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-                wait_time = (attempt + 1) * 5  # 每次重試等待時間遞增：5秒、10秒、15秒...
-                st.warning(f"⚠️ Gemini 伺服器忙碌中 ({error_str[:30]}...)，進行第 {attempt + 1}/{max_retries} 次重試，等待 {wait_time} 秒...")
+                wait_time = (attempt + 1) * 5  # 遞增等待：5秒、10秒、15秒...
+                st.warning(f"⚠️ Gemini 伺服器忙碌中，進行第 {attempt + 1}/{max_retries} 次重試，等待 {wait_time} 秒...")
                 time.sleep(wait_time)
             else:
-                st.error(f"❌ Gemini API 發生不可預期錯誤: {e}")
+                st.error(f"❌ Gemini API 發生錯誤: {e}")
                 break
 
     st.error("❌ 已達最大重試次數，Gemini 伺服器持續忙碌，請稍後再試。")
@@ -99,7 +98,7 @@ if st.button("🚀 開始處理任務", type="primary"):
     else:
         st.info("🔄 正在讀取與處理資料...")
         
-        # 初始化 API
+        # 初始化 API Client
         client = genai.Client(api_key=gemini_api_key) if run_gemini else None
         tavily_client = TavilyClient(api_key=tavily_api_key) if run_tavily else None
 
@@ -215,21 +214,29 @@ if st.button("🚀 開始處理任務", type="primary"):
                 processed_results.append(row_dict)
 
             progress_bar.progress((index + 1) / total_rows)
+            # 加入 1.5 秒間隔，保護 API 頻率不被鎖住
+            time.sleep(1.5)
 
-        # 匯出成果
         if processed_results:
             df_out = pd.DataFrame(processed_results)
-            output_filename = f"AI產出結果_{input_sheet_name}.xlsx"
             
-            with pd.ExcelWriter(output_filename, engine='openpyxl') as writer:
+            # 使用 BytesIO 在記憶體中建構 Excel 檔案，避免實體硬碟寫入權限問題
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine='openpyxl') as writer:
                 df_out.to_excel(writer, index=False, sheet_name='AI通用清單')
+            excel_buffer.seek(0)
 
+            # 將結果與檔名寫入 session_state
+            st.session_state["processed_data"] = excel_buffer.getvalue()
+            st.session_state["output_filename"] = f"AI產出結果_{input_sheet_name}.xlsx"
             st.success("🎉 處理完成！")
-            
-            with open(output_filename, "rb") as file:
-                st.download_button(
-                    label="📥 下載處理結果 Excel 檔案",
-                    data=file,
-                    file_name=output_filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+
+# 繪製下載按鈕（獨立於處理邏輯外，避免點擊下載時按鈕消失）
+if "processed_data" in st.session_state:
+    st.download_button(
+        label="📥 下載處理結果 Excel 檔案",
+        data=st.session_state["processed_data"],
+        file_name=st.session_state["output_filename"],
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary"
+    )
